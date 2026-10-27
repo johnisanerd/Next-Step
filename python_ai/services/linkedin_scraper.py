@@ -14,11 +14,11 @@ logger = logging.getLogger(__name__)
 class LinkedInScraper:
     """
     Scrape LinkedIn profile data using Apify's LinkedIn Profile Scraper.
-    Uses the cheapest actor: https://apify.com/anchor/linkedin-profile-scraper
+    Uses the johnvc/linkedin-profile-api actor.
     """
     
-    # Apify actor for LinkedIn profile scraping (pay-per-result, very cheap)
-    ACTOR_ID = "anchor/linkedin-profile-scraper"
+    # Apify actor for LinkedIn profile scraping
+    ACTOR_ID = "johnvc/linkedin-profile-api"
     
     def __init__(self, api_key: str, timeout: int = 60):
         """Initialize LinkedIn scraper with Apify API key."""
@@ -70,10 +70,7 @@ class LinkedInScraper:
             run_url = f"{self.base_url}/acts/{self.ACTOR_ID}/runs"
             
             payload = {
-                "profileUrls": [linkedin_url],
-                "proxyConfiguration": {
-                    "useApifyProxy": True
-                }
+                "profileUrls": [linkedin_url]
             }
             
             headers = {
@@ -153,6 +150,10 @@ class LinkedInScraper:
     def _transform_profile_data(self, raw_data: Dict) -> Dict:
         """Transform raw Apify response to our internal format."""
         try:
+            # The actor returns error rows instead of failing the run
+            if raw_data.get("result_type") == "error" or raw_data.get("error_message"):
+                return {"error": raw_data.get("error_message") or "Profile not available", "scraped": False}
+            
             # Extract relevant fields from LinkedIn profile
             skills = []
             
@@ -163,10 +164,10 @@ class LinkedInScraper:
             # Extract experience
             experiences = []
             total_years = 0
-            for exp in raw_data.get("experiences", []):
+            for exp in raw_data.get("experience") or raw_data.get("positions") or []:
                 title = exp.get("title", "")
-                company = exp.get("company", "")
-                duration = exp.get("duration", "")
+                company = exp.get("company") or exp.get("companyName", "")
+                duration = exp.get("duration") or ""
                 
                 if title:
                     experiences.append({
@@ -176,15 +177,23 @@ class LinkedInScraper:
                     })
                 
                 # Try to parse years from duration
-                if duration:
+                if isinstance(duration, str) and duration:
                     years_match = re.search(r'(\d+)\s*(?:yr|year)', duration.lower())
                     if years_match:
                         total_years += int(years_match.group(1))
             
+            # Fall back to the current position when no history is returned
+            if not experiences and raw_data.get("currentTitle"):
+                experiences.append({
+                    "title": raw_data.get("currentTitle", ""),
+                    "company": raw_data.get("currentCompany", ""),
+                    "duration": ""
+                })
+            
             # Extract education
             education = []
-            for edu in raw_data.get("education", []):
-                school = edu.get("school", "")
+            for edu in raw_data.get("education") or []:
+                school = edu.get("school") or edu.get("title", "")
                 degree = edu.get("degree", "")
                 if school:
                     education.append({
@@ -210,8 +219,8 @@ class LinkedInScraper:
                 "experience_years": total_years,
                 "education": education[:5],
                 "certifications": certifications[:10],
-                "connection_count": raw_data.get("connectionsCount", 0),
-                "profile_picture": raw_data.get("profilePicture", ""),
+                "connection_count": raw_data.get("connections") or 0,
+                "profile_picture": raw_data.get("avatar") or "",
             }
             
         except Exception as e:
